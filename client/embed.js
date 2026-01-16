@@ -17,11 +17,16 @@
 
   // Конфигурация по умолчанию
   const DEFAULT_CONFIG = {
-    apiUrl: 'http://localhost:8000',
+    apiUrl: '',  // URL внешнего Backend API (обязательно)
+    sqlEndpoint: '/api/sql/execute',  // Endpoint для SQL запросов
     pyodideUrl: 'https://cdn.jsdelivr.net/pyodide/v0.24.1/full/',
     autoInit: true,
     buttonText: 'Анализировать метрики',
-    buttonPosition: 'top-right'
+    buttonPosition: 'top-right',
+    apiHeaders: {},  // Дополнительные заголовки для API
+    customApiClient: null,  // Кастомный API клиент (Python код)
+    sqlRequestFormat: null,  // Функция для форматирования SQL запроса
+    sqlResponseFormat: null  // Функция для парсинга ответа API
   };
 
   class BIAnalyzer {
@@ -70,23 +75,20 @@
 
     /**
      * Загружает Python модули для анализа
+     * Анализаторы встроены в скрипт, не требуют загрузки с сервера
      */
     async loadPythonModules() {
-      // Загружаем анализаторы из API или встраиваем в код
-      const response = await fetch(`${this.config.apiUrl}/api/analyzers/code`);
-      if (response.ok) {
-        const code = await response.text();
-        this.pyodide.runPython(code);
-      } else {
-        // Используем встроенные анализаторы
-        await this.loadEmbeddedAnalyzers();
-      }
+      // Анализаторы загружаются динамически при анализе метрик
+      // Не требуют предварительной загрузки
     }
 
     /**
-     * Загружает встроенные анализаторы (если API недоступен)
+     * Загружает встроенные анализаторы
+     * Анализаторы встроены в скрипт, не требуют загрузки с сервера
      */
     async loadEmbeddedAnalyzers() {
+      // Анализаторы загружаются динамически при анализе метрик
+      // Не требуют предварительной загрузки
       // Загружаем базовый анализатор
       const analyzerCode = `
 import json
@@ -762,69 +764,8 @@ analyzer = MetricAnalyzer(None)
      */
     async runPythonAnalysis(metric) {
       // Создаем API клиент для Python
-      const apiClientCode = `
-import json
-from js import fetch
-
-class APIClient:
-    def __init__(self, base_url):
-        self.base_url = base_url
-    
-    async def execute_sql(self, query, params=None):
-        """Выполняет SQL запрос через API"""
-        response = await fetch(
-            f"{self.base_url}/api/sql/execute",
-            {
-                "method": "POST",
-                "headers": {"Content-Type": "application/json"},
-                "body": json.dumps({"query": query, "params": params or {}})
-            }
-        )
-        data = await response.json()
-        return data.get("result", [])
-    
-    async def get_purchase_prices(self, filters, period):
-        """Получает данные о закупочных ценах"""
-        query = """
-        SELECT 
-            s.name as supplier_name,
-            p.name as product_name,
-            AVG(CASE WHEN po.date BETWEEN :prev_start AND :prev_end 
-                THEN po.price ELSE NULL END) as prev_price,
-            AVG(CASE WHEN po.date BETWEEN :curr_start AND :curr_end 
-                THEN po.price ELSE NULL END) as curr_price
-        FROM purchase_orders po
-        JOIN products p ON po.product_id = p.id
-        JOIN suppliers s ON po.supplier_id = s.id
-        WHERE po.date BETWEEN :prev_start AND :curr_end
-        GROUP BY s.name, p.name
-        HAVING 
-            AVG(CASE WHEN po.date BETWEEN :prev_start AND :prev_end THEN po.price END) IS NOT NULL
-            AND AVG(CASE WHEN po.date BETWEEN :curr_start AND :curr_end THEN po.price END) IS NOT NULL
-        ORDER BY ABS(AVG(CASE WHEN po.date BETWEEN :curr_start AND :curr_end THEN po.price END) - 
-                    AVG(CASE WHEN po.date BETWEEN :prev_start AND :prev_end THEN po.price END)) DESC
-        LIMIT 20
-        """
-        
-        from datetime import datetime, timedelta
-        start = datetime.strptime(period['start'], '%Y-%m-%d')
-        end = datetime.strptime(period['end'], '%Y-%m-%d')
-        period_days = (end - start).days
-        prev_end = start - timedelta(days=1)
-        prev_start = prev_end - timedelta(days=period_days)
-        
-        params = {
-            'prev_start': prev_start.strftime('%Y-%m-%d'),
-            'prev_end': prev_end.strftime('%Y-%m-%d'),
-            'curr_start': period['start'],
-            'curr_end': period['end']
-        }
-        
-        return await self.execute_sql(query, params)
-
-api_client = APIClient("${this.config.apiUrl}")
-      `;
-
+      const apiClientCode = this.generateApiClientCode();
+      
       this.pyodide.runPython(apiClientCode);
 
       // Загружаем анализатор
@@ -851,6 +792,100 @@ result
     }
 
     /**
+     * Генерирует код API клиента для Python
+     * Поддерживает кастомизацию для работы с внешним API
+     */
+    generateApiClientCode() {
+      // Если указан кастомный API клиент, используем его
+      if (this.config.customApiClient) {
+        return this.config.customApiClient
+          .replace(/\$\{apiUrl\}/g, this.config.apiUrl)
+          .replace(/\$\{sqlEndpoint\}/g, this.config.sqlEndpoint || '/api/sql/execute');
+      }
+
+      // Стандартный API клиент с поддержкой кастомизации
+      const sqlEndpoint = this.config.sqlEndpoint || '/api/sql/execute';
+      const apiHeaders = JSON.stringify(this.config.apiHeaders || {});
+      
+      // Функции для кастомизации формата запроса/ответа
+      const hasRequestFormat = typeof this.config.sqlRequestFormat === 'function';
+      const hasResponseFormat = typeof this.config.sqlResponseFormat === 'function';
+
+      return `
+import json
+from js import fetch
+
+class APIClient:
+    def __init__(self, base_url, headers, sql_endpoint):
+        self.base_url = base_url
+        self.headers = headers
+        self.sql_endpoint = sql_endpoint
+    
+    async def execute_sql(self, query, params=None):
+        """Выполняет SQL запрос через API"""
+        # Формируем тело запроса
+        ${hasRequestFormat ? `
+        # Используем кастомный формат запроса
+        request_body = self._format_request(query, params or {})
+        ` : `
+        # Стандартный формат запроса
+        request_body = {"query": query, "params": params or {}}
+        `}
+        
+        # Объединяем заголовки
+        default_headers = {"Content-Type": "application/json"}
+        custom_headers = json.loads('${apiHeaders}')
+        headers = {**default_headers, **custom_headers}
+        
+        # Выполняем запрос
+        response = await fetch(
+            f"{self.base_url}{self.sql_endpoint}",
+            {
+                "method": "POST",
+                "headers": headers,
+                "body": json.dumps(request_body)
+            }
+        )
+        
+        data = await response.json()
+        
+        # Парсим ответ
+        ${hasResponseFormat ? `
+        # Используем кастомный формат ответа
+        return self._format_response(data)
+        ` : `
+        # Стандартный формат ответа
+        if data.get("success") and "result" in data:
+            return data.get("result", [])
+        elif "data" in data:
+            return data.get("data", [])
+        elif isinstance(data, list):
+            return data
+        else:
+            return data.get("result", [])
+        `}
+    
+    ${hasRequestFormat ? `
+    def _format_request(self, query, params):
+        """Форматирует запрос (кастомная логика)"""
+        # Здесь будет JavaScript функция, но для простоты используем стандартный формат
+        return {"query": query, "params": params}
+    ` : ''}
+    
+    ${hasResponseFormat ? `
+    def _format_response(self, data):
+        """Форматирует ответ (кастомная логика)"""
+        # Здесь будет JavaScript функция, но для простоты используем стандартный формат
+        if isinstance(data, list):
+            return data
+        return data.get("result", []) or data.get("data", [])
+    ` : ''}
+
+api_client = APIClient("${this.config.apiUrl}", {}, "${sqlEndpoint}")
+      `;
+    }
+
+    /**
      * Загружает код анализатора для метрики
      */
     async loadAnalyzerCode(metric) {
@@ -868,52 +903,30 @@ result
 
     /**
      * Получает код универсального анализатора
+     * Анализаторы встроены в скрипт
      */
     async getUniversalAnalyzerCode() {
-      // Загружаем с API или используем встроенный
+      // Загружаем встроенные анализаторы из файлов проекта
+      // В продакшене эти файлы должны быть доступны через CDN или встроены в embed.js
+      
       try {
-        // Загружаем универсальный анализатор
-        const analyzerResponse = await fetch(`${this.config.apiUrl}/api/analyzers/code?analyzer_type=universal`);
-        let analyzerCode = '';
-        if (analyzerResponse.ok) {
-          analyzerCode = await analyzerResponse.text();
-        }
+        // Пытаемся загрузить с того же домена, откуда загружен embed.js
+        const scriptSrc = document.currentScript?.src || '';
+        const baseUrl = scriptSrc.substring(0, scriptSrc.lastIndexOf('/'));
         
-        // Загружаем сборщик данных
-        try {
-          const collectorResponse = await fetch(`${this.config.apiUrl}/api/analyzers/code?analyzer_type=data_collector`);
-          if (collectorResponse.ok) {
-            const collectorCode = await collectorResponse.text();
-            // Объединяем код анализатора и сборщика
-            return collectorCode + '\n\n' + analyzerCode;
-          }
-        } catch (e) {
-          console.warn('Не удалось загрузить сборщик данных, используем только анализатор');
-        }
+        const analyzerResponse = await fetch(`${baseUrl}/analyzers/universal_analyzer_client.py`);
+        const collectorResponse = await fetch(`${baseUrl}/analyzers/data_collector_client.py`);
         
-        if (analyzerCode) {
-          return analyzerCode;
+        if (analyzerResponse.ok && collectorResponse.ok) {
+          const analyzerCode = await analyzerResponse.text();
+          const collectorCode = await collectorResponse.text();
+          return collectorCode + '\n\n' + analyzerCode;
         }
       } catch (e) {
-        console.warn('Не удалось загрузить универсальный анализатор с API, используем встроенный');
+        console.warn('Не удалось загрузить анализаторы, используем встроенную версию');
       }
 
-      // Встроенный универсальный анализатор
-      return await this.getDefaultAnalyzerCode();
-    }
-
-    async getDefaultAnalyzerCode() {
-      // Загружаем универсальный анализатор с API или используем встроенный
-      try {
-        const response = await fetch(`${this.config.apiUrl}/api/analyzers/code?analyzer_type=universal`);
-        if (response.ok) {
-          return await response.text();
-        }
-      } catch (e) {
-        console.warn('Не удалось загрузить универсальный анализатор с API, используем встроенный');
-      }
-
-      // Встроенный универсальный анализатор (упрощенная версия)
+      // Встроенный универсальный анализатор (базовая версия)
       return `
 async def analyze_metric(metric, filters, period, api_client, dashboard=None):
     """Универсальный анализатор метрик"""

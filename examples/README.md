@@ -101,37 +101,33 @@ window.BIAnalyzerConfig = {
 };
 ```
 
-## Работа с API
+## Работа с Backend API
 
-### Настройка CORS
+### Настройка подключения
 
-Убедитесь, что ваш API разрешает запросы с домена дашборда:
-
-```python
-# В api/main.py
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://your-dashboard-domain.com"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-```
-
-### Аутентификация
-
-Если API требует аутентификацию:
+Система требует внешний Backend API для выполнения SQL запросов:
 
 ```javascript
 window.BIAnalyzerConfig = {
-  apiUrl: 'https://your-api.com',
+  apiUrl: 'https://your-backend-api.com',  // URL вашего Backend API
+  sqlEndpoint: '/api/v1/query',  // Endpoint для SQL запросов
   apiHeaders: {
-    'Authorization': 'Bearer YOUR_TOKEN'
+    'Authorization': 'Bearer YOUR_TOKEN'  // Заголовки авторизации
   }
 };
 ```
 
-И обновите `embed.js` для передачи заголовков в запросах.
+### Настройка CORS
+
+Убедитесь, что ваш Backend API разрешает запросы с домена дашборда.
+
+### Требования к Backend API
+
+- Должен поддерживать выполнение SQL запросов (только SELECT)
+- Должен принимать запросы в формате: `{"query": "SELECT ...", "params": {...}}`
+- Должен возвращать результаты в формате: `{"result": [...]}` или `[...]`
+
+Подробнее см. [docs/EXTERNAL_API_INTEGRATION.md](../docs/EXTERNAL_API_INTEGRATION.md)
 
 ## Отладка
 

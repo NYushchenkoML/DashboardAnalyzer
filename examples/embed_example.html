@@ -99,9 +99,13 @@
     <script>
         // Конфигурация BI Analyzer
         window.BIAnalyzerConfig = {
-            apiUrl: 'http://localhost:8000',  // URL вашего API
+            apiUrl: 'https://your-backend-api.com',  // URL вашего Backend API
+            sqlEndpoint: '/api/v1/query',  // Endpoint для SQL запросов
+            apiHeaders: {
+                'Authorization': 'Bearer YOUR_TOKEN'  // Заголовки авторизации
+            },
             autoInit: true,                     // Автоматическая инициализация
-            buttonText: 'Анализировать метрику',
+            buttonText: 'Анализировать метрики',
             buttonPosition: 'top-right'
         };
         
