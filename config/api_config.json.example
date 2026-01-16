@@ -1,0 +1,11 @@
+{
+  "api": {
+    "base_url": "https://api.example.com",
+    "timeout": 30,
+    "retry_count": 3,
+    "auth": {
+      "type": "bearer",
+      "token": "your_token_here"
+    }
+  }
+}
